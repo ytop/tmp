@@ -22,120 +22,64 @@
 #include <limits>
 #include <algorithm>
 
-// Kernel started from here
-#define L2_ARGMAX_HELPER(BLOCK, NUM_WARP_Q, NUM_THREAD_Q, IS_DESCEND)                                              \
-  do {                                                                                                             \
-    L2ArgMax<T, S, NUM_WARP_Q, NUM_THREAD_Q, BLOCK, IS_DESCEND>                                                    \
-      <<<GET_BLOCKS((BLOCK * block_num_limit)), BLOCK, 0, stream>>>(outer_size, inner_size, stride, input, output, \
-                                                                    output_index);                                 \
-  } while (0)
-
-#define ARG_LEFT_INSERT_THREAD_QUEUE(_k, _v)                                    \
-  do {                                                                          \
-    if (is_descend ? Cmp<T>::gt(_k, warp_K_top) : Cmp<T>::lt(_k, warp_K_top)) { \
-      {                                                                         \
-        _Pragma("unroll") for (int i = thread_queue - 1; i > 0; --i) {          \
-          threadK[i] = threadK[i - 1];                                          \
-          threadV[i] = threadV[i - 1];                                          \
-        }                                                                       \
-      }                                                                         \
-      threadK[0] = _k;                                                          \
-      threadV[0] = _v;                                                          \
-      ++num_vals;                                                               \
-    }                                                                           \
-  } while (0)
-
-template <typename T, typename S, int warp_queue, int thread_queue, int threads_per_block, bool is_descend>
+template <typename T, typename S, int threads_per_block>
 __global__ void L2ArgMax(int outer_size, int inner_size, int stride, const T *input, T *output, S *output_index) {
   constexpr int kNumWarps = threads_per_block / kWarpSize;
+  const int threads_per_warp = 32;
   const T init_K = static_cast<T>(-9999);
   constexpr S init_V = static_cast<S>(-1);
 
   for (int t_idx = blockIdx.x * blockDim.x + threadIdx.x; t_idx < blockDim.x * outer_size * stride;
        t_idx += blockDim.x * gridDim.x) {
-    __shared__ T shared_K[kNumWarps * warp_queue];
-    __shared__ S shared_V[kNumWarps * warp_queue];
-
-    T threadK[thread_queue];  // NOLINT
-    S threadV[thread_queue];  // NOLINT
-
-    T *warp_K;
-    S *warp_V;
+    __shared__ T shared_K[kNumWarps];
+    __shared__ S shared_V[kNumWarps];
 
     T warp_K_top = init_K;
-    int k_minus_1 = 0;
-    int num_vals = 0;
-    int limit = (inner_size / kWarpSize) * kWarpSize;
     int outer_id = t_idx / blockDim.x / stride;
     int inner_id = t_idx / blockDim.x % stride;
 
-    /////////////////////////////////////////////
-    // init begin
-    _Pragma("unroll") for (int i = 0; i < thread_queue; ++i) {
-      threadK[i] = init_K;
-      threadV[i] = init_V;
-    }
+    T threadK = init_K;
+    S threadV = init_V;
 
     int laneId = GetLaneId();
     int warpId = threadIdx.x / kWarpSize;  // 0,1,2 or 3
 
-    // warp shared memory start address
-    warp_K = shared_K + warpId * warp_queue;
-    warp_V = shared_V + warpId * warp_queue;
-
-    // landId is 0..31, threadId mod 32
-    // warp_quere is nearly above k, 1024 if k=1000
-    // each thread takes care of its lane only
-    for (int i = laneId; i < warp_queue; i += kWarpSize) {
-      warp_K[i] = init_K;
-      warp_V[i] = init_V;
-    }
-
     // sync till all threads init done
     __syncwarp();
 
-    // init end
-    /////////////////////////////////////////////
-
-    /////////////////////////////////////////////
-    // insert begin
     int i = threadIdx.x;
-    for (; i < limit; i += threads_per_block) {
-      ARG_LEFT_INSERT_THREAD_QUEUE((input[outer_id * inner_size * stride + i * stride + inner_id]), (i));
-
-      // CHECK_AND_MERGE_THREAD_QUEUE() begin
-      bool needSort = (num_vals == thread_queue);
-      needSort = __any_sync(0xffffffff, needSort);
-      if (!needSort) continue;
-
-      MergeWarpQueue<T, S, warp_queue, thread_queue, is_descend>(threadK, threadV, warp_K, warp_V);
-
-      num_vals = 0;
-      _Pragma("unroll") for (int i = 0; i < thread_queue; ++i) {
-        threadK[i] = init_K;
-        threadV[i] = init_V;
+    for (; i < inner_size; i += threads_per_block) {
+      auto &k = input[outer_id * inner_size * stride + i * stride + inner_id];
+      auto &v = i;
+      if (Cmp<T>::gt(k, warp_K_top)) {
+        {
+          threadK = k;
+          threadV = v;
+          warp_K_top = k;
+        }
       }
-      warp_K_top = warp_K[k_minus_1];
-      __syncwarp();
     }
+    __syncwarp();
 
-    if (i < inner_size) {
-      ARG_LEFT_INSERT_THREAD_QUEUE((input[outer_id * inner_size * stride + i * stride + inner_id]), (i));
+    for (int offset = threads_per_warp / 2; offset > 0; offset /= 2) {
+      T other_K = __shfl_down_sync(0xffffffff, threadK, offset);
+      S other_V = __shfl_down_sync(0xffffffff, threadV, offset);
+
+      bool small_compare_descend = Cmp<T>::lt(threadK, other_K);
+      ConditionAssign(small_compare_descend, &threadK, other_K);
+      ConditionAssign(small_compare_descend, &threadV, other_V);
     }
-
-    // insert end
-    /////////////////////////////////////////////
-
-    /////////////////////////////////////////////
-    // reduce begin
-    MergeWarpQueue<T, S, warp_queue, thread_queue, is_descend>(threadK, threadV, warp_K, warp_V);
+    shared_K[warpId] = threadK;
+    shared_V[warpId] = threadV;
     __syncthreads();
-    SortBlockWide<kNumWarps, threads_per_block, T, S, warp_queue, is_descend>(shared_K, shared_V);
 
-    // reduce end
-    /////////////////////////////////////////////
+    _Pragma("unroll") for (int offset = kNumWarps / 2; offset > 0; offset /= 2) {
+      int pos = threadIdx.x;
+      if ( pos >= (kNumWarps/offset)) break; 
+      L2CompareAndSwap<T, S, false>(shared_K, shared_V, pos, pos + offset);
+    }
+    __syncwarp();
 
-    // ship data from shared memory to output buffer
     output[outer_id * stride + inner_id] = shared_K[0];
     output_index[outer_id * stride + inner_id] = shared_V[0];
   }
@@ -145,7 +89,8 @@ template <typename T, typename S>
 void ArgmaxWithValue(int outer_size, int inner_size, int stride, const T *input, T *output, S *output_index,
                      cudaStream_t stream) {
   int block_num_limit = outer_size * stride < 1024 ? outer_size * stride : 1024;
-  L2_ARGMAX_HELPER(256, 32, 2, true);
+  L2ArgMax<T, S, 256><<<GET_BLOCKS((256 * block_num_limit)), 256, 0, stream>>>(outer_size, inner_size, stride, input,
+                                                                               output, output_index);
 }
 
 template <typename T, typename S>
