@@ -22,46 +22,34 @@
 #include <limits>
 #include <algorithm>
 
-template <typename T, typename S, int threads_per_block>
+template <typename T, typename S>
 __global__ void L2ArgMax(int outer_size, int inner_size, int stride, const T *input, T *output, S *output_index) {
-  constexpr int kNumWarps = threads_per_block / kWarpSize;
-  const int threads_per_warp = 32;
   const T init_K = static_cast<T>(-9999);
   constexpr S init_V = static_cast<S>(-1);
 
-  for (int t_idx = blockIdx.x * blockDim.x + threadIdx.x; t_idx < blockDim.x * outer_size * stride;
+  for (int t_idx = blockIdx.x * blockDim.x + threadIdx.x; t_idx < kWarpSize * outer_size * stride;
        t_idx += blockDim.x * gridDim.x) {
-    __shared__ T shared_K[kNumWarps];
-    __shared__ S shared_V[kNumWarps];
-
-    T warp_K_top = init_K;
-    int outer_id = t_idx / blockDim.x / stride;
-    int inner_id = t_idx / blockDim.x % stride;
+    int outer_id = t_idx / kWarpSize / stride;
+    int inner_id = t_idx / kWarpSize % stride;
+    int lane_id = t_idx % kWarpSize;
 
     T threadK = init_K;
     S threadV = init_V;
 
-    int laneId = GetLaneId();
-    int warpId = threadIdx.x / kWarpSize;  // 0,1,2 or 3
-
     // sync till all threads init done
     __syncwarp();
 
-    int i = threadIdx.x;
-    for (; i < inner_size; i += threads_per_block) {
+    for (int i = lane_id; i < inner_size; i += kWarpSize) {
       auto &k = input[outer_id * inner_size * stride + i * stride + inner_id];
       auto &v = i;
-      if (Cmp<T>::gt(k, warp_K_top)) {
-        {
-          threadK = k;
-          threadV = v;
-          warp_K_top = k;
-        }
+      if (Cmp<T>::gt(k, threadK)) {
+        threadK = k;
+        threadV = v;
       }
     }
     __syncwarp();
 
-    for (int offset = threads_per_warp / 2; offset > 0; offset /= 2) {
+    for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
       T other_K = __shfl_down_sync(0xffffffff, threadK, offset);
       S other_V = __shfl_down_sync(0xffffffff, threadV, offset);
 
@@ -69,28 +57,21 @@ __global__ void L2ArgMax(int outer_size, int inner_size, int stride, const T *in
       ConditionAssign(small_compare_descend, &threadK, other_K);
       ConditionAssign(small_compare_descend, &threadV, other_V);
     }
-    shared_K[warpId] = threadK;
-    shared_V[warpId] = threadV;
-    __syncthreads();
 
-    _Pragma("unroll") for (int offset = kNumWarps / 2; offset > 0; offset /= 2) {
-      int pos = threadIdx.x;
-      if ( pos >= (kNumWarps/offset)) break; 
-      L2CompareAndSwap<T, S, false>(shared_K, shared_V, pos, pos + offset);
-    }
     __syncwarp();
-
-    output[outer_id * stride + inner_id] = shared_K[0];
-    output_index[outer_id * stride + inner_id] = shared_V[0];
+    if (lane_id == 0) {
+      output[outer_id * stride + inner_id] = threadK;
+      output_index[outer_id * stride + inner_id] = threadV;
+    }
   }
 }
 
 template <typename T, typename S>
 void ArgmaxWithValue(int outer_size, int inner_size, int stride, const T *input, T *output, S *output_index,
                      cudaStream_t stream) {
-  int block_num_limit = outer_size * stride < 1024 ? outer_size * stride : 1024;
-  L2ArgMax<T, S, 256><<<GET_BLOCKS((256 * block_num_limit)), 256, 0, stream>>>(outer_size, inner_size, stride, input,
-                                                                               output, output_index);
+  int block_num_limit = outer_size * stride * 32;
+  L2ArgMax<T, S>
+    <<<GET_BLOCKS(block_num_limit), 512, 0, stream>>>(outer_size, inner_size, stride, input, output, output_index);
 }
 
 template <typename T, typename S>
