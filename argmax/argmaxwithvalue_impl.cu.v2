@@ -32,7 +32,7 @@ __global__ void Warp4ArgMax(int outer_size, int bound, int inner_size, const T *
   __shared__ T shared_K[kNumWarps];
   __shared__ S shared_V[kNumWarps];
   const T init_K = static_cast<T>(-9999);
-  constexpr S init_V = static_cast<S>(-1);
+  const S init_V = static_cast<S>(-1);
 
   for (int t_idx = blockIdx.x * blockDim.x + threadIdx.x; t_idx < kGroupSize * outer_size * inner_size;
        t_idx += blockDim.x * gridDim.x) {
@@ -54,12 +54,11 @@ __global__ void Warp4ArgMax(int outer_size, int bound, int inner_size, const T *
     __syncthreads();
 
     for (int i = tgId; i < bound; i += kGroupSize) {
-      auto &other_K = input[outer_id * bound * inner_size + i * inner_size + inner_id];
-      // S other_V = outer_id * bound * inner_size + i * inner_size + inner_id;
+      T other_K = input[outer_id * bound * inner_size + i * inner_size + inner_id];
       S other_V = i;
-      bool small_compare_descend = Cmp<T>::lt(threadK, other_K);
-      ConditionAssign(small_compare_descend, &threadK, other_K);
-      ConditionAssign(small_compare_descend, &threadV, other_V);
+      bool is_bigger = Cmp<T>::lt(threadK, other_K);
+      ConditionAssign(is_bigger, &threadK, other_K);
+      ConditionAssign(is_bigger, &threadV, other_V);
     }
     __syncwarp();
 
@@ -67,44 +66,40 @@ __global__ void Warp4ArgMax(int outer_size, int bound, int inner_size, const T *
       T other_K = __shfl_down_sync(0xffffffff, threadK, offset);
       S other_V = __shfl_down_sync(0xffffffff, threadV, offset);
 
-      bool small_compare_descend = Cmp<T>::lt(threadK, other_K);
-      ConditionAssign(small_compare_descend, &threadK, other_K);
-      ConditionAssign(small_compare_descend, &threadV, other_V);
+      bool is_bigger = Cmp<T>::lt(threadK, other_K);
+      ConditionAssign(is_bigger, &threadK, other_K);
+      ConditionAssign(is_bigger, &threadV, other_V);
     }
 
     __syncwarp();
 
-    // from bias add
     if (laneId == 0) {
       shared_K[warpId] = threadK;
       shared_V[warpId] = threadV;
     }
     __syncthreads();
 
-    if (tgId < kWarpGroup / 2) {
-      bool small_compare_descend =
-        Cmp<T>::lt(shared_K[(groupId * kWarpGroup) + tgId], shared_K[(groupId * kWarpGroup) + tgId + 2]);
-      ConditionAssign(small_compare_descend, (shared_K + (groupId * kWarpGroup) + tgId),
+    if (tgId < 22) {
+      bool is_bigger = Cmp<T>::lt(shared_K[(groupId * kWarpGroup) + tgId], shared_K[(groupId * kWarpGroup) + tgId + 2]);
+      ConditionAssign(is_bigger, (shared_K + (groupId * kWarpGroup) + tgId),
                       (shared_K[(groupId * kWarpGroup) + tgId + 2]));
-      ConditionAssign(small_compare_descend, (shared_V + (groupId * kWarpGroup) + tgId),
+      ConditionAssign(is_bigger, (shared_V + (groupId * kWarpGroup) + tgId),
                       (shared_V[(groupId * kWarpGroup) + tgId + 2]));
-      __syncwarp();
-      if (tgId < kWarpGroup / 4) {
-        bool small_compare_descend =
-          Cmp<T>::lt(shared_K[(groupId * kWarpGroup) + tgId], shared_K[(groupId * kWarpGroup) + tgId + 1]);
-        ConditionAssign(small_compare_descend, (shared_K + (groupId * kWarpGroup) + tgId),
-                        (shared_K[(groupId * kWarpGroup) + tgId + 1]));
-        ConditionAssign(small_compare_descend, (shared_V + (groupId * kWarpGroup) + tgId),
-                        (shared_V[(groupId * kWarpGroup) + tgId + 1]));
-      }
-      __syncwarp();
     }
+    __syncwarp();
 
-    // The first thread of each group write output
     if (tgId == 0) {
+      bool is_bigger = Cmp<T>::lt(shared_K[(groupId * kWarpGroup) + tgId], shared_K[(groupId * kWarpGroup) + tgId + 1]);
+      ConditionAssign(is_bigger, (shared_K + (groupId * kWarpGroup) + tgId),
+                      (shared_K[(groupId * kWarpGroup) + tgId + 1]));
+      ConditionAssign(is_bigger, (shared_V + (groupId * kWarpGroup) + tgId),
+                      (shared_V[(groupId * kWarpGroup) + tgId + 1]));
+
+      // The first thread of each group write output
       output[outer_id * inner_size + inner_id] = shared_K[groupId * kWarpGroup];
       output_index[outer_id * inner_size + inner_id] = shared_V[groupId * kWarpGroup];
     }
+    __syncthreads();
   }
 }
 
