@@ -8,11 +8,12 @@ class SampledSoftmaxLoss(_Loss):
         num_true (int): The number of target classes per training example.
         sampled_values (Tuple):  Tuple of (`sampled_candidates`, `true_expected_count`,
             `sampled_expected_count`) returned by a `*_candidate_sampler` function.
-            (if None, we default to `log_uniform_candidate_sampler`)
+            Default to None, `log_uniform_candidate_sampler` is applied.
         remove_accidental_hits (bool): Whether to remove "accidental hits"
             where a sampled class equals one of the target classes.  Default is True.
-        seed (int): Random seed for candidate sampling. Default to None, which doesn't set
-            the op-level random seed for candidate sampling.
+        seed (int): Random seed for candidate sampling. Default: "None".
+        reduction (str): Type of reduction to be applied to loss. The optional values are "mean", "sum", and "none".
+            If "none", do not perform reduction. Default: "None".
 
     Inputs:
         - **weights** (Tensor) - Tensor of shape (C, dim).
@@ -23,8 +24,6 @@ class SampledSoftmaxLoss(_Loss):
             the input network.
 
     Outputs:
-        Tensor, a tensor of the same shape as logits with the component-wise
-        logistic losses.
-        (A `batch_size` 1-D tensor of per-example sampled softmax losses.)
+        Tensor, a tensor of shape (N) with the per-example sampled softmax losses.
 
     """
