@@ -41,47 +41,41 @@ class TorchNet(torch.nn.Module):
     def forward(self, x):
         return self.bn(x)
 
-context.set_context(mode=context.GRAPH_MODE, device_target="GPU", device_id=0)
-np.random.seed(1)
+# Prepare data
+#np.random.seed(1)
 x_np = np.random.randn(1, 3, 2, 2).astype(np.float32)
+input_grad_np = np.random.randn(1, 3, 2, 2).astype(np.float32)
 
-# numpy 
-x = torch.from_numpy(x_np)
-x.requires_grad=True
-mean = x.mean(dim=[0, 2, 3], keepdim=True)
-invstd = torch.sqrt(x.var([0, 2, 3], unbiased=False, keepdim=True) + 1e-5)
-print("x ",x)
-print("mean ",mean)
-print("invstd ",invstd)
-y = (x - mean) / invstd 
-print("y ",y)
-y.abs().sum().backward()
-print("numpy grad  ", x.grad)
-print("  ")
-x1_grad = x.grad.clone()
-y1 = y.clone()
-
-# torch 
-x = torch.from_numpy(x_np)
-x.requires_grad=True
+# torch
+torch_input = torch.from_numpy(x_np)
+torch_input.requires_grad=True
 torch_net = TorchNet()
-torch_out = torch_net(x)
-torch_out.abs().sum().backward()
-torch_out_grad_np = x.grad.data.clone()
-print("torch grad ", torch_out_grad_np)
+torch_out = torch_net(torch_input)
+torch_out_np = torch_out.detach().numpy()
+torch_out.backward(torch.from_numpy(input_grad_np))
+torch_out_grad_np = torch_input.grad.data.clone().detach().cpu().numpy()
 
 #  mindspore 
-x = mindspore.Tensor(x_np)
-grad = P.OnesLike()(x)
-
-weight = Tensor(np.ones(2).astype(np.float32))
-bias = Tensor(np.ones(2).astype(np.float32))
-moving_mean = Tensor(np.ones(2).astype(np.float32))
-moving_var_init = Tensor(np.ones(2).astype(np.float32))
+ms_input = mindspore.Tensor(x_np)
+weight = Tensor(np.ones(3).astype(np.float32))
+bias = Tensor(np.zeros(3).astype(np.float32))
+moving_mean = Tensor(np.zeros(3).astype(np.float32))
+moving_var_init = Tensor(np.ones(3).astype(np.float32))
 
 context.set_context(mode=context.GRAPH_MODE, device_target="GPU")
-bn_net = Batchnorm_Net(2, weight, bias, moving_mean, moving_var_init)
-bn_net.set_train()
-bn_grad = Grad(bn_net)
-output = bn_grad(Tensor(x), Tensor(grad))
+ms_net = Batchnorm_Net(3, weight, bias, moving_mean, moving_var_init)
+ms_net.set_train()
+ms_out = ms_net(ms_input)
+ms_grad = Grad(ms_net)
+ms_out_grad_np = ms_grad(Tensor(ms_input), Tensor(input_grad_np))
 
+# Compare
+N = 5
+print("Print the first N = ", N)
+print("torch  out ", torch_out_np.reshape(-1)[:N])
+print("minds  out ", ms_out.asnumpy().reshape(-1)[:N])
+print("torch grad ", torch_out_grad_np.reshape(-1)[:N])
+print("minds grad ", ms_out_grad_np[0].asnumpy().reshape(-1)[:N])
+
+assert np.allclose(ms_out.asnumpy(), torch_out_np)
+assert np.allclose(ms_out_grad_np[0].asnumpy(), torch_out_grad_np)
