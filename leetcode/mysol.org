@@ -992,8 +992,41 @@ private:
 };
 #+END_SRC
 
-**  987 ?? 
+**  987 Vetical Order Traversal of a Binary Tree 
 #+BEGIN_SRC c++
+
+class Solution
+{
+public:
+    using P = pair<int, int>;
+    int x_min;
+    int x_max;
+    void help(TreeNode *root, map<P, multiset<int>> &m, int x, int y)
+    {
+        if (!root)
+            return;
+        x_min = min(x_min, x);
+        x_max = max(x_max, x);
+        m[{y, x}].insert(root->val);
+        help(root->left, m, x - 1, y + 1);
+        help(root->right, m, x + 1, y + 1);
+    }
+    vector<vector<int>> verticalTraversal(TreeNode *root)
+    {
+        map<P, multiset<int>> m;
+        x_min = INT_MAX;
+        x_max = INT_MIN;
+        help(root, m, 0, 0);
+        vector<vector<int>> v(x_max - x_min + 1);
+        for (auto it = m.begin(); it != m.end(); it++)
+        {
+            vector<int> sub(it->second.begin(), it->second.end());
+            auto i = it->first.second - x_min;
+            v[i].insert(v[i].end(), sub.begin(), sub.end());
+        }
+        return v;
+    }
+};
 #+END_SRC
 
 **  1302 Deepest Leaves Sum 
@@ -1016,6 +1049,78 @@ class Solution {
     return sum;
   }
 };
+#+END_SRC
+
+**  101 Symmetric Tree 
+#+BEGIN_SRC c++
+
+class Solution
+{
+public:
+    bool verify(TreeNode *left, TreeNode *right)
+    {
+        if (left && right)
+        {
+            return left->val == right->val &&
+                   verify(left->left, right->right) && verify(left->right, right->left);
+        }
+        else if (!left && !right)
+        {
+            return true;
+        }
+        return false;
+    }
+    bool isSymmetric(TreeNode *root)
+    {
+        if (!root)
+            return true;
+        return verify(root->left, root->right);
+    }
+};
+#+END_SRC
+
+**  104 Maximu Depth of Binary Tree 
+#+BEGIN_SRC c++
+class Solution {
+public:
+    int maxDepth(TreeNode* root) {
+        if (!root) return 0;
+        return max(maxDepth(root->left), maxDepth(root->right)) + 1;
+    }
+};
+#+END_SRC
+
+**  110 Balanced Bianry Tree 
+#+BEGIN_SRC c++
+class Solution {
+public:
+    bool depth(TreeNode* root, int &k) {
+        if (!root) return true;
+        k++;
+        int m= k, n= k;
+        if (!depth(root->left, m)) return false;
+        if (!depth(root->right, n)) return false;
+        k = max(m, n);
+        return abs(m-n) <= 1;
+    }
+    bool isBalanced(TreeNode* root) {
+        int k = 0;
+        if (!root) return true;
+        return depth(root, k);
+    }
+};
+#+END_SRC
+
+**  xxx 
+#+BEGIN_SRC c++
+#+END_SRC
+
+**  xxx 
+#+BEGIN_SRC c++
+#+END_SRC
+
+**  xxx 
+#+BEGIN_SRC c++
 #+END_SRC
 
 **  xxx 
