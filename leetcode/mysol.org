@@ -1330,12 +1330,42 @@ public:
 };
 #+END_SRC
 
-**  xxx 
+**  174 Dungeon Game 
 #+BEGIN_SRC c++
+class Solution {
+ public:
+  int calculateMinimumHP(vector<vector<int>> &dungeon) {
+    int M = dungeon.size();
+    int N = dungeon[0].size();
+    dungeon[M - 1][N - 1] = 1 - dungeon[M - 1][N - 1];
+    for (int i = M - 1; i >= 0; i--) {
+      for (int j = N - 1; j >= 0; j--) {
+        if (i == M - 1 && j == N - 1) continue;
+        auto down = i == M - 1 ? INT_MAX : dungeon[i + 1][j];
+        auto right = j == N - 1 ? INT_MAX : dungeon[i][j + 1];
+        dungeon[i][j] = max(1-dungeon[i][j],  min(down, right) - dungeon[i][j]);
+      }
+    }
+    return max(1, dungeon[0][0]);
+  }
+};
 #+END_SRC
 
-**  xxx 
+**  931 Minimum Failing Path Sum 
 #+BEGIN_SRC c++
+class Solution {
+public:
+    int minFallingPathSum(vector<vector<int>>& matrix) {
+        for (int i=0;i<matrix.size()-1; i++) {
+            for (int j=0; j<matrix[i].size(); j++) {
+                matrix[i+1][j] += min({j==0?INT_MAX:matrix[i][j-1], 
+                                       j==matrix[i].size()-1?INT_MAX :matrix[i][j+1],
+                                       matrix[i][j]});
+            }
+        }
+        return *min_element(matrix.back().begin(), matrix.back().end());
+    }
+};
 #+END_SRC
 
 **  xxx 
